@@ -156,4 +156,10 @@ uint8_t ui_rotation(void);
  * safe to ask for at any time. */
 esp_err_t ui_screenshot(void);
 
+/* The same picture as pixels: w*h RGB565, row-major, upright, in PSRAM. The
+ * caller frees it with heap_caps_free(). NULL if it could not be taken. For
+ * the configuration page's /api/screenshot, which works in the USB build,
+ * where there is no console to print to. */
+uint16_t *ui_snapshot(uint32_t *w, uint32_t *h);
+
 #endif /* VFO_UI_H */

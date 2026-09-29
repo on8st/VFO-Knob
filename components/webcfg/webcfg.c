@@ -370,6 +370,45 @@ static void reboot_cb(void *arg);
  * the ELF of the build that crashed. The USB build has no console, and flash
  * is out of reach once TinyUSB owns the pads, so this is the only way to read
  * one out. It holds task stacks, so it sits behind the login like the rest. */
+/* The face as it is drawn, as a BMP -- 24-bit, rows top-down, which every
+ * browser shows and nothing needs converting. The USB build has no console
+ * to take one over, and this page is always reachable. */
+static esp_err_t screenshot_get(httpd_req_t *r)
+{
+    REQUIRE_AUTH(r);
+    uint32_t w, h;
+    uint16_t *px = ui_snapshot(&w, &h);
+    if (!px) {
+        httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "no screenshot");
+        return ESP_FAIL;
+    }
+    const uint32_t row = (w * 3 + 3) & ~3u, img = row * h;
+    uint8_t hdr[54] = { 'B', 'M' };
+    const uint32_t f[] = { 54 + img, 0, 54, 40, w, (uint32_t)-(int32_t)h };
+    memcpy(hdr + 2, &f[0], 4);   memcpy(hdr + 10, &f[2], 4);
+    memcpy(hdr + 14, &f[3], 4);  memcpy(hdr + 18, &f[4], 4);
+    memcpy(hdr + 22, &f[5], 4);                  /* negative: top-down */
+    hdr[26] = 1; hdr[28] = 24;                   /* planes, bits per pixel */
+    memcpy(hdr + 34, &img, 4);
+
+    httpd_resp_set_type(r, "image/bmp");
+    esp_err_t err = httpd_resp_send_chunk(r, (const char *)hdr, sizeof hdr);
+    static uint8_t line[3 * 480];      /* the server runs one handler at a time */
+    for (uint32_t y = 0; y < h && err == ESP_OK && row <= sizeof line; y++) {
+        memset(line, 0, row);
+        for (uint32_t x = 0; x < w; x++) {
+            const uint16_t v = px[y * w + x];
+            line[x * 3]     = (uint8_t)((v & 0x1F) * 255 / 31);          /* B */
+            line[x * 3 + 1] = (uint8_t)((v >> 5 & 0x3F) * 255 / 63);     /* G */
+            line[x * 3 + 2] = (uint8_t)((v >> 11 & 0x1F) * 255 / 31);    /* R */
+        }
+        err = httpd_resp_send_chunk(r, (const char *)line, row);
+    }
+    heap_caps_free(px);
+    httpd_resp_send_chunk(r, NULL, 0);
+    return err;
+}
+
 static esp_err_t coredump_get(httpd_req_t *r)
 {
     REQUIRE_AUTH(r);
@@ -583,7 +622,7 @@ esp_err_t webcfg_start(void)
     httpd_config_t c = HTTPD_DEFAULT_CONFIG();
     c.server_port      = 80;
     c.lru_purge_enable = true;
-    c.max_uri_handlers = 9;
+    c.max_uri_handlers = 10;
     /* An upload ends in esp_ota_end() checking the RSA signature, on this
      * task: at 4608 that left 448 bytes (measured), and 416 more on the path
      * overflowed it. Internal RAM, because the same task writes flash. */
@@ -610,6 +649,7 @@ esp_err_t webcfg_start(void)
         { .uri = "/api/ota/upload", .method = HTTP_POST, .handler = ota_upload_post },
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = reboot_post },
         { .uri = "/api/coredump", .method = HTTP_GET, .handler = coredump_get },
+        { .uri = "/api/screenshot", .method = HTTP_GET, .handler = screenshot_get },
     };
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)
         httpd_register_uri_handler(s_srv, &uris[i]);

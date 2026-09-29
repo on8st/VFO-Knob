@@ -2324,14 +2324,17 @@ static void b64_line(const uint8_t *in, size_t n)
     printf("SNAP:%s\n", out);
 }
 
-esp_err_t ui_screenshot(void)
+uint16_t *ui_snapshot(uint32_t *out_w, uint32_t *out_h)
 {
-    if (!s_disp) return ESP_ERR_INVALID_STATE;
+    if (!s_disp) return NULL;
     const uint32_t w = BOARD_LCD_H_RES, h = BOARD_LCD_V_RES;
     const uint32_t stride = lv_draw_buf_width_to_stride(w, LV_COLOR_FORMAT_RGB565);
     const uint32_t size = stride * h;
     uint8_t *mem = heap_caps_malloc(size + LV_DRAW_BUF_ALIGN, MALLOC_CAP_SPIRAM);
-    ESP_RETURN_ON_FALSE(mem, ESP_ERR_NO_MEM, TAG, "snapshot buffer");
+    if (!mem) {
+        ESP_LOGE(TAG, "snapshot: no memory");
+        return NULL;
+    }
 
     lv_draw_buf_t buf;
     lv_result_t r = LV_RESULT_INVALID;
@@ -2345,20 +2348,36 @@ esp_err_t ui_screenshot(void)
     if (r != LV_RESULT_OK) {
         heap_caps_free(mem);
         ESP_LOGE(TAG, "snapshot failed");
-        return ESP_FAIL;
+        return NULL;
     }
+    /* Close up the rows to the start of the allocation, so the caller gets
+     * plain w*h pixels and one pointer to free. Forward is safe: each row
+     * moves towards the start, never past a row not yet moved. */
+    for (uint32_t y = 0; y < h; y++)
+        memmove(mem + y * w * 2, buf.data + y * stride, w * 2);
+    *out_w = w;
+    *out_h = h;
+    return (uint16_t *)mem;
+}
+
+esp_err_t ui_screenshot(void)
+{
+    uint32_t w, h;
+    uint16_t *px = ui_snapshot(&w, &h);
+    if (!px) return ESP_FAIL;
 
     /* 57 bytes a line: 76 base64 characters, short enough that a line from
      * another task's log landing in between costs nothing. */
     printf("VFO-SNAP-BEGIN %u %u RGB565\n", (unsigned)w, (unsigned)h);
+    const uint8_t *b = (const uint8_t *)px;
     for (uint32_t y = 0; y < h; y++) {
-        const uint8_t *row = buf.data + y * stride;
+        const uint8_t *row = b + y * w * 2;
         for (uint32_t x = 0; x < w * 2; x += 57)
             b64_line(row + x, (w * 2 - x) < 57 ? (w * 2 - x) : 57);
     }
     printf("VFO-SNAP-END\n");
     fflush(stdout);
-    heap_caps_free(mem);
+    heap_caps_free(px);
     return ESP_OK;
 }
 
