@@ -7,6 +7,8 @@
 
 static const char *TAG = "enc";
 
+#if BOARD_HAS_ENCODER
+
 typedef struct {
     uint8_t  low_ticks;   /* consecutive polls seen low */
     uint8_t  last;
@@ -107,3 +109,22 @@ void hal_encoder_stats(enc_stats_t *st)
     st->rejected   = s_ch[0].rejected + s_ch[1].rejected;
     st->reversals  = s_reversals;
 }
+
+#else /* !BOARD_HAS_ENCODER */
+
+/* A board with no knob: the input task still runs, and simply never sees a
+ * detent from here. Tuning reaches it by other means. */
+esp_err_t hal_encoder_init(void)
+{
+    ESP_LOGI(TAG, "no knob on this board");
+    return ESP_ERR_NOT_SUPPORTED;
+}
+int32_t hal_encoder_poll(void)       { return 0; }
+int32_t hal_encoder_count(void)      { return 0; }
+int32_t hal_encoder_read_delta(void) { return 0; }
+void hal_encoder_stats(enc_stats_t *st)
+{
+    if (st) *st = (enc_stats_t){ 0 };
+}
+
+#endif /* BOARD_HAS_ENCODER */

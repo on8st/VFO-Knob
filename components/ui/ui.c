@@ -459,11 +459,12 @@ static bool  s_ptt_tap, s_was_tx;
 static uint32_t s_released_at;       /* lv_tick of the last release */
 static float s_meter_disp = -127.0f;
 static lv_display_t *s_disp;
-/* The panel is mounted upside down relative to the USB-C port: with the cable
- * at the top, the image needs 180 degrees. Software rotation, because this
+/* How the face is turned, in quarter turns: BOARD_UI_ROTATION. On the knob the
+ * panel is mounted upside down relative to the USB-C port: with the cable at
+ * the top, the image needs 180 degrees. Software rotation, because this
  * panel honours MADCTL MX but not MY so the controller cannot do a full turn.
  * Applied through esp_lvgl_port, which rotates TOUCH with it. */
-#define UI_ROT_DEFAULT 2               /* 2 = 180 degrees */
+#define UI_ROT_DEFAULT BOARD_UI_ROTATION
 static uint8_t s_rot = UI_ROT_DEFAULT;
 
 /* Green below S7, amber approaching S9, red at S9 and above.
@@ -1747,16 +1748,24 @@ esp_err_t ui_init(void)
      * watchdog reboots the device before the UI is ever drawn. It was benign
      * for a long time purely because the timing happened not to collide. */
     lvgl_port_lock(0);
-    lv_display_set_rotation(disp, LV_DISPLAY_ROTATION_180);
+    lv_display_set_rotation(disp, (lv_display_rotation_t)UI_ROT_DEFAULT);
     lvgl_port_unlock();
-    const lvgl_port_touch_cfg_t tc = { .disp = disp, .handle = hal_touch_handle() };
-    lv_indev_t *touch = lvgl_port_add_touch(&tc);
-    ESP_RETURN_ON_FALSE(touch, ESP_FAIL, TAG, "add touch");
-    /* LVGL reads once per refresh period (16 ms) by default. A brisk tap can
-     * fall between slower reads, which reads as "press firmly". */
-    lvgl_port_lock(0);
-    lv_timer_set_period(lv_indev_get_read_timer(touch), TOUCH_POLL_MS);
-    lvgl_port_unlock();
+    /* A face without touch, if touch did not come up. lvgl_port_add_touch()
+     * asserts on a NULL handle rather than failing, and that abort during
+     * init was a boot loop into safe mode behind a black screen -- the dial
+     * is worth having even when nothing on it can be pressed. */
+    if (hal_touch_handle()) {
+        const lvgl_port_touch_cfg_t tc = { .disp = disp, .handle = hal_touch_handle() };
+        lv_indev_t *touch = lvgl_port_add_touch(&tc);
+        ESP_RETURN_ON_FALSE(touch, ESP_FAIL, TAG, "add touch");
+        /* LVGL reads once per refresh period (16 ms) by default. A brisk tap
+         * can fall between slower reads, which reads as "press firmly". */
+        lvgl_port_lock(0);
+        lv_timer_set_period(lv_indev_get_read_timer(touch), TOUCH_POLL_MS);
+        lvgl_port_unlock();
+    } else {
+        ESP_LOGE(TAG, "no touch -- the dial shows, but nothing on it responds");
+    }
 
     lvgl_port_lock(0);
     build();
@@ -2184,6 +2193,69 @@ void ui_cycle_rotation(void)
 }
 
 uint8_t ui_rotation(void) { return s_rot; }
+
+/* --- screenshot ------------------------------------------------------------
+ * The face rendered again into a buffer of our own, not read back from the
+ * panel (which cannot be read) nor from LVGL's pool (a frame is 259 kB; the
+ * pool has a few tens). Rendered from the screen object, so it is upright
+ * whatever the panel's rotation. */
+
+static void b64_line(const uint8_t *in, size_t n)
+{
+    static const char T[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char out[4 * ((57 + 2) / 3) + 1];
+    size_t o = 0;
+    for (size_t i = 0; i < n; i += 3) {
+        const uint32_t v = (uint32_t)in[i] << 16 |
+                           (i + 1 < n ? (uint32_t)in[i + 1] << 8 : 0) |
+                           (i + 2 < n ? (uint32_t)in[i + 2] : 0);
+        out[o++] = T[(v >> 18) & 63];
+        out[o++] = T[(v >> 12) & 63];
+        out[o++] = i + 1 < n ? T[(v >> 6) & 63] : '=';
+        out[o++] = i + 2 < n ? T[v & 63] : '=';
+    }
+    out[o] = '\0';
+    printf("SNAP:%s\n", out);
+}
+
+esp_err_t ui_screenshot(void)
+{
+    if (!s_disp) return ESP_ERR_INVALID_STATE;
+    const uint32_t w = BOARD_LCD_H_RES, h = BOARD_LCD_V_RES;
+    const uint32_t stride = lv_draw_buf_width_to_stride(w, LV_COLOR_FORMAT_RGB565);
+    const uint32_t size = stride * h;
+    uint8_t *mem = heap_caps_malloc(size + LV_DRAW_BUF_ALIGN, MALLOC_CAP_SPIRAM);
+    ESP_RETURN_ON_FALSE(mem, ESP_ERR_NO_MEM, TAG, "snapshot buffer");
+
+    lv_draw_buf_t buf;
+    lv_result_t r = LV_RESULT_INVALID;
+    if (lv_draw_buf_init(&buf, w, h, LV_COLOR_FORMAT_RGB565, stride,
+                         lv_draw_buf_align(mem, LV_COLOR_FORMAT_RGB565),
+                         size) == LV_RESULT_OK && lvgl_port_lock(500)) {
+        r = lv_snapshot_take_to_draw_buf(lv_screen_active(),
+                                         LV_COLOR_FORMAT_RGB565, &buf);
+        lvgl_port_unlock();
+    }
+    if (r != LV_RESULT_OK) {
+        heap_caps_free(mem);
+        ESP_LOGE(TAG, "snapshot failed");
+        return ESP_FAIL;
+    }
+
+    /* 57 bytes a line: 76 base64 characters, short enough that a line from
+     * another task's log landing in between costs nothing. */
+    printf("VFO-SNAP-BEGIN %u %u RGB565\n", (unsigned)w, (unsigned)h);
+    for (uint32_t y = 0; y < h; y++) {
+        const uint8_t *row = buf.data + y * stride;
+        for (uint32_t x = 0; x < w * 2; x += 57)
+            b64_line(row + x, (w * 2 - x) < 57 ? (w * 2 - x) : 57);
+    }
+    printf("VFO-SNAP-END\n");
+    fflush(stdout);
+    heap_caps_free(mem);
+    return ESP_OK;
+}
 
 int32_t ui_take_step_request(void) { int32_t v = s_step_req; s_step_req = 0; return v; }
 bool    ui_take_ptt_tap(void)      { bool v = s_ptt_tap;     s_ptt_tap  = false; return v; }

@@ -42,6 +42,18 @@ static const char *TAG = "ota";
                      "/" OTA_BRANCH "/firmware/"
 #define OTA_PREFIX   "vfo-knob-"
 
+/* The knob's images carry no board in their name, as they always have; any
+ * other board's do -- vfo-knob-<radio>-<board> -- so each board has its own
+ * channel, firmware/<radio>-<board>/, and the name checks below refuse an
+ * image for the other board exactly as they refuse another radio's. */
+#if VFO_BOARD_KNOB18
+#define OTA_BOARD_SUFFIX ""
+#elif VFO_BOARD_LCD185C
+#define OTA_BOARD_SUFFIX "-lcd185c"
+#else
+#error "no board selected"
+#endif
+
 static char            s_base[128];       /* OTA_ROOT_URL + radio + "/" */
 static ota_status_t    s_st = { .phase = OTA_IDLE };
 static portMUX_TYPE    s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -103,11 +115,18 @@ static bool same_product(const char *a, const char *b)
     return strcmp(product_of(a), product_of(b)) == 0;
 }
 
+/* The radio alone, without the board: what the configuration page offers and
+ * compares against its list of radios. */
 const char *ota_radio(void)
 {
+    static char radio[24];
     const char *p = product_of(esp_app_get_description()->project_name);
     const size_t n = strlen(OTA_PREFIX);
-    return strncmp(p, OTA_PREFIX, n) == 0 ? p + n : p;
+    strlcpy(radio, strncmp(p, OTA_PREFIX, n) == 0 ? p + n : p, sizeof radio);
+    const size_t len = strlen(radio), s = strlen(OTA_BOARD_SUFFIX);
+    if (s && len > s && strcmp(radio + len - s, OTA_BOARD_SUFFIX) == 0)
+        radio[len - s] = '\0';
+    return radio;
 }
 
 /* --------------------------------------------------- tiny JSON extraction */
@@ -320,8 +339,11 @@ bool ota_busy(void) { return s_busy || s_up; }
 esp_err_t ota_upload_begin(const char *radio, size_t size)
 {
     if (s_busy || s_up) return ESP_ERR_INVALID_STATE;
+    /* Another radio's firmware is still this board's: the suffix is not the
+     * operator's to choose. */
     if (radio && *radio)
-        snprintf(s_up_want, sizeof s_up_want, OTA_PREFIX "%s", radio);
+        snprintf(s_up_want, sizeof s_up_want, OTA_PREFIX "%s" OTA_BOARD_SUFFIX,
+                 radio);
     else
         strlcpy(s_up_want, esp_app_get_description()->project_name,
                 sizeof s_up_want);
@@ -466,7 +488,8 @@ const char *ota_root_url(void) { return OTA_ROOT_URL; }
 esp_err_t ota_init(void)
 {
     const esp_app_desc_t *d = esp_app_get_description();
-    snprintf(s_base, sizeof s_base, "%s%s/", OTA_ROOT_URL, ota_radio());
+    snprintf(s_base, sizeof s_base, "%s%s" OTA_BOARD_SUFFIX "/", OTA_ROOT_URL,
+             ota_radio());
     strlcpy(s_st.running, d->version, sizeof s_st.running);
     strlcpy(s_st.message, "idle", sizeof s_st.message);
     return ESP_OK;

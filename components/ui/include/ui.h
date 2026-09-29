@@ -145,4 +145,10 @@ void ui_ask_knob_moved(void);
 void    ui_cycle_rotation(void);
 uint8_t ui_rotation(void);
 
+/* Print the face as it is drawn -- upright, as the operator sees it -- to
+ * stdout, framed for tools/snap.py: a "VFO-SNAP-BEGIN <w> <h> RGB565" line,
+ * the pixels as base64 lines prefixed "SNAP:", and "VFO-SNAP-END". Read-only;
+ * safe to ask for at any time. */
+esp_err_t ui_screenshot(void);
+
 #endif /* VFO_UI_H */

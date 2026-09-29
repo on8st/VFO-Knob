@@ -1,0 +1,4 @@
+dependencies:
+  # The driver Waveshare's ESP32-S3-Touch-LCD-1.85C-Test ships a copy of.
+  espressif/esp_lcd_st77916:
+    version: "*"

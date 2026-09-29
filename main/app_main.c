@@ -78,17 +78,37 @@ static void report_memory(void)
     ESP_LOGI(TAG, "free SPIRAM        : %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
 
+/* What should answer on this board's bus, and what it is. */
+static const struct { uint8_t addr; const char *who; } I2C_EXPECTED[] = {
+    { BOARD_I2C_ADDR_TOUCH,    "CST816 touch" },
+#if BOARD_HAS_HAPTIC
+    { BOARD_I2C_ADDR_HAPTIC,   "DRV2605 haptic" },
+#endif
+#ifdef BOARD_I2C_ADDR_EXPANDER
+    { BOARD_I2C_ADDR_EXPANDER, "TCA9554 expander" },
+#endif
+#ifdef BOARD_I2C_ADDR_RTC
+    { BOARD_I2C_ADDR_RTC,      "PCF85063 RTC" },
+#endif
+#ifdef BOARD_I2C_ADDR_DAC
+    { BOARD_I2C_ADDR_DAC,      "ES8311 codec" },
+#endif
+#ifdef BOARD_I2C_ADDR_ADC
+    { BOARD_I2C_ADDR_ADC,      "ES7210 mic ADC" },
+#endif
+};
+
 static void probe_i2c(void)
 {
-    ESP_LOGI(TAG, "--- M2 i2c scan (expect exactly 0x15 and 0x5A) ---");
+    ESP_LOGI(TAG, "--- M2 i2c scan (%s) ---", BOARD_NAME);
     i2c_master_bus_handle_t bus = board_i2c();
     int found = 0;
     for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
         if (i2c_master_probe(bus, addr, 50) == ESP_OK) {
-            const char *who = addr == BOARD_I2C_ADDR_TOUCH  ? " (CST816 touch)"
-                            : addr == BOARD_I2C_ADDR_HAPTIC ? " (DRV2605 haptic)"
-                                                            : " (UNEXPECTED)";
-            ESP_LOGI(TAG, "  0x%02X ACK%s", addr, who);
+            const char *who = "UNEXPECTED";
+            for (size_t i = 0; i < sizeof I2C_EXPECTED / sizeof I2C_EXPECTED[0]; i++)
+                if (I2C_EXPECTED[i].addr == addr) who = I2C_EXPECTED[i].who;
+            ESP_LOGI(TAG, "  0x%02X ACK (%s)", addr, who);
             found++;
         }
     }
@@ -101,6 +121,9 @@ static void probe_i2c(void)
 
 static void haptic_bringup(void)
 {
+#if !BOARD_HAS_HAPTIC
+    ESP_LOGI(TAG, "--- M3 no haptic motor on this board ---");
+#else
     ESP_LOGI(TAG, "--- M3 actuator + calibration ---");
     if (drv2605_init(&s_drv, board_i2c(), BOARD_I2C_ADDR_HAPTIC,
                      DRV_ACTUATOR_ERM) != ESP_OK) {
@@ -118,6 +141,7 @@ static void haptic_bringup(void)
     /* Library B, not A: the 5-15 ms brake against A's 20-40 ms is what turns
      * a buzz into a click, and A is out of spec in bidirectional closed loop. */
     drv2605_set_library(&s_drv, DRV_LIB_B);
+#endif /* BOARD_HAS_HAPTIC */
 }
 
 /* ------------------------------------------------------------- M6 / M8 --- */
@@ -246,7 +270,7 @@ static void encoder_task(void *arg)
  * and a click or a buzz went out over the air with the operator's voice. */
 static void haptic(uint8_t effect)
 {
-    if (!effect) return;
+    if (!BOARD_HAS_HAPTIC || !effect) return;
     radio_status_t st;
     radio_get_status(&st);
     if (st.tx || st.ptt_state != PTT_IDLE) return;
@@ -281,7 +305,7 @@ static void console_task(void *arg)
      * has a real button on the screen, so the console keeps only commands that
      * are safe to receive by accident: unkey and the aborts both STOP a
      * transmission, and the rest are read-only. */
-    ESP_LOGI(TAG, "console: u=unkey  s=status  r=rotate");
+    ESP_LOGI(TAG, "console: u=unkey  s=status  r=rotate  x=screenshot");
     ESP_LOGI(TAG, "         p=abort:pong-stale  d=abort:link-down");
 
     for (;;) {
@@ -295,6 +319,7 @@ static void console_task(void *arg)
                   radio_ptt_force_abort(PTT_AB_PONG_STALE); break;
         case 'd': ESP_LOGI(TAG, "console: forcing link-down abort");
                   radio_ptt_force_abort(PTT_AB_LINK_DOWN);  break;
+        case 'x': ui_screenshot(); break;      /* read-only: tools/snap.py */
         case 'r': ui_cycle_rotation();
                   ESP_LOGI(TAG, "rotation -> %u degrees", ui_rotation() * 90u);
                   break;
@@ -775,9 +800,11 @@ static void net_task(void *arg)
             const bool nobody = !started && atomic_load(&s_cable) == CABLE_NONE;
             if (!nobody)          flip_since = 0;
             else if (!flip_since) flip_since = now;
+            /* Only a board with a second chip on the other orientation has a
+             * wrong way round; elsewhere nobody there is simply a charger. */
             atomic_store(&s_flip_hint,
-                         nobody && (!cfg->ssid[0] ||
-                                    now - flip_since < 8 * 1000 * 1000));
+                         BOARD_HAS_SECOND_CHIP && nobody &&
+                         (!cfg->ssid[0] || now - flip_since < 8 * 1000 * 1000));
         }
 #endif
 
