@@ -59,14 +59,17 @@ if(NOT VFO_BOARD IN_LIST _vfo_boards)
     message(FATAL_ERROR "VFO_BOARD=${VFO_BOARD}: there is firmware for ${_vfo_boards}")
 endif()
 
-# The panel drivers differ per board, and each brings its own managed
-# component, so exactly one is built -- the same way as the radio clients.
+# The panel drivers and the audio hardware differ per board, and some bring
+# managed components of their own, so exactly one of each is built -- the
+# same way as the radio clients.
 if(VFO_BOARD STREQUAL "lcd185c")
     set(_vfo_panel panel_st77916)
-    list(APPEND EXCLUDE_COMPONENTS panel)
+    set(_vfo_audio_hw audio_hw_es8311)
+    list(APPEND EXCLUDE_COMPONENTS panel audio_hw_pcm5100)
 else()
     set(_vfo_panel panel)
-    list(APPEND EXCLUDE_COMPONENTS panel_st77916)
+    set(_vfo_audio_hw audio_hw_pcm5100)
+    list(APPEND EXCLUDE_COMPONENTS panel_st77916 audio_hw_es8311)
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
@@ -100,6 +103,7 @@ idf_build_set_property(COMPILE_DEFINITIONS "VFO_RADIO_${_vfo_radio_uc}=1" APPEND
 # main to require.
 idf_build_set_property(VFO_BOARD ${VFO_BOARD})
 idf_build_set_property(VFO_BOARD_PANEL ${_vfo_panel})
+idf_build_set_property(VFO_BOARD_AUDIO_HW ${_vfo_audio_hw})
 string(TOUPPER "${VFO_BOARD}" _vfo_board_uc)
 idf_build_set_property(COMPILE_DEFINITIONS "VFO_BOARD_${_vfo_board_uc}=1" APPEND)
 if(VFO_BOARD STREQUAL "knob18")

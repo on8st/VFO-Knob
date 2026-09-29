@@ -1,0 +1,4 @@
+dependencies:
+  # Codec register setup for the ES8311 and ES7210; the I2S channels stay ours.
+  espressif/esp_codec_dev:
+    version: "^1.6"

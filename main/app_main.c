@@ -1204,7 +1204,9 @@ void app_main(void)
      * rollback, which put the previous image back. */
     if (have_ui) ui_dim_set_minutes(net_prov_dim_min(), net_prov_blank_min());
 
-    bring_up("knob", hal_encoder_init);
+    /* A board without a knob tunes on the ring; there is nothing to bring up,
+     * and "knob FAILED" in every boot log would be a false alarm. */
+    if (BOARD_HAS_ENCODER) bring_up("knob", hal_encoder_init);
 
     if (!safe) {
         bring_up("audio-out", audio_out_init);

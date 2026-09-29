@@ -1,9 +1,8 @@
 #include "audio_out.h"
-#include "board_pins.h"
+#include "audio_hw.h"
 
 #include <string.h>
 
-#include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -77,44 +76,13 @@ static void play_task(void *arg)
 
 esp_err_t audio_out_init(void)
 {
-    /* GPIO0 HIGH hands the PCM5100A to the ESP32-S3 rather than the secondary
-     * ESP32. board_init() already does this; assert it here too because a
-     * silent mux in the wrong position produces perfect logs and no sound. */
-    gpio_set_level(BOARD_PIN_AUDIO_MUX_SEL, 1);
-
     s_ring = xRingbufferCreateWithCaps(RING_BYTES, RINGBUF_TYPE_BYTEBUF,
                                        MALLOC_CAP_SPIRAM);
     ESP_RETURN_ON_FALSE(s_ring, ESP_ERR_NO_MEM, TAG, "ring");
 
-        /* I2S1 explicitly, not AUTO: PDM receive for the microphone is only
-     * available on I2S0 on the ESP32-S3, so the DAC must not take it. */
-    i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
-    /* 4 x 180 frames = 2.9 kB of DMA memory, about half the default. Internal
-     * RAM is the contended resource on this board; at 24 kHz this is still
-     * 30 ms of buffering, comfortably more than the scheduler needs. */
-    cc.dma_desc_num  = 4;
-    cc.dma_frame_num = 180;
-    /* Zero each DMA buffer once it has been played. Without this the DMA
-     * keeps cycling through whatever it last held whenever the stream stops
-     * -- a network stall, or the radio going quiet -- and the knob loops the
-     * last 30 ms of audio until data returns. */
-    cc.auto_clear    = true;
-    ESP_RETURN_ON_ERROR(i2s_new_channel(&cc, &s_tx, NULL), TAG, "chan");
-
-    i2s_std_config_t sc = {
-        .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_RATE_HZ),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-                        I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,     /* PCM5100A derives its own clock */
-            .bclk = BOARD_PIN_I2S_BCLK,
-            .ws   = BOARD_PIN_I2S_WS,
-            .dout = BOARD_PIN_I2S_DOUT,
-            .din  = I2S_GPIO_UNUSED,
-        },
-    };
-    ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_tx, &sc), TAG, "std");
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx), TAG, "enable");
+    /* The board's own output, 16-bit stereo at AUDIO_RATE_HZ: see audio_hw.h
+     * for what is underneath. */
+    ESP_RETURN_ON_ERROR(audio_hw_out_open(AUDIO_RATE_HZ, &s_tx), TAG, "hw");
 
     s_stats.sample_rate = AUDIO_RATE_HZ;
     s_stats.channels    = AUDIO_CHANNELS;
@@ -122,9 +90,8 @@ esp_err_t audio_out_init(void)
     /* Core 1 with the rest of the "feel" work; priority above the UI so a
      * redraw cannot cause an audible gap, but below the knob. */
     xTaskCreatePinnedToCore(play_task, "audio", 3072, NULL, 11, NULL, 1);
-    ESP_LOGI(TAG, "I2S up: %d Hz stereo, bclk=%d ws=%d dout=%d, %d kB PSRAM ring",
-             AUDIO_RATE_HZ, BOARD_PIN_I2S_BCLK, BOARD_PIN_I2S_WS,
-             BOARD_PIN_I2S_DOUT, RING_BYTES / 1024);
+    ESP_LOGI(TAG, "I2S up: %d Hz stereo, %s, %d kB PSRAM ring",
+             AUDIO_RATE_HZ, audio_hw_describe(), RING_BYTES / 1024);
     return ESP_OK;
 }
 

@@ -1,14 +1,8 @@
-# The knob's audio is a PCM5100A DAC and a PDM microphone on plain I2S. A board
-# without that path builds audio_none.c instead, behind the same headers: see
-# VFO_BOARD in the top-level CMakeLists.txt.
-idf_build_get_property(board VFO_BOARD)
-if(board STREQUAL "lcd185c")
-    set(srcs "audio_none.c")
-else()
-    set(srcs "audio_out.c" "audio_in.c")
-endif()
+# The audio logic, shared by every board, over the board's own audio hardware
+# component (audio_hw.h): see VFO_BOARD in the top-level CMakeLists.txt.
+idf_build_get_property(board_audio_hw VFO_BOARD_AUDIO_HW)
 idf_component_register(
-    SRCS ${srcs}
+    SRCS "audio_out.c" "audio_in.c"
     INCLUDE_DIRS "include"
-    REQUIRES board esp_driver_i2s esp_driver_gpio
+    REQUIRES ${board_audio_hw} esp_driver_i2s
 )

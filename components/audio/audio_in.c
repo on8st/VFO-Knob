@@ -1,10 +1,9 @@
 #include "audio_in.h"
-#include "board_pins.h"
+#include "audio_hw.h"
 
 #include <math.h>
 #include <string.h>
 
-#include "driver/i2s_pdm.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -19,14 +18,10 @@ static const char *TAG = "mic";
  * hole in the transmitted audio. */
 #define MIC_RING_BYTES (16 * 1024)
 #define MIC_READ_SAMPLES 512
-/* The PDM element is quiet: speech close to the knob peaked at 1-5% of full
- * scale, and the S3 has no PDM gain stage of its own. This fixed boost sets
- * where the operator's 0-200% sits. At 8x, 200% only reached -20 dB on
- * AetherSDR's mic Level gauge; at 32x it barely reached 0 with AetherSDR's TCI
- * TX slider at 100% (at its 50% default the radio sees the knob's full scale
- * as -6 dBFS). So 64x: 100% is where 200% was, and 200% is the most there is
- * -- peaks at the limiter, which is what MIC_KNEE is for. */
-#define MIC_PREGAIN 64.0f
+/* A fixed boost that sets where the operator's 0-200% sits. It belongs to the
+ * microphone, so the board's audio_hw.h chooses it: 64x for the knob's quiet
+ * PDM element (see there for how that was arrived at). */
+#define MIC_PREGAIN AUDIO_HW_MIC_PREGAIN
 /* Above this the level is rounded off rather than clipped: y = k + (1-k) *
  * u/(1+u), which leaves the slope continuous at the knee and never quite
  * reaches full scale. -3 dBFS. At 200% loud syllables get here; hard clipping
@@ -36,7 +31,6 @@ static const char *TAG = "mic";
  * offset along with the speech would spend headroom on nothing. */
 #define MIC_DC_POLE 0.995f
 
-static i2s_chan_handle_t  s_rx;
 static RingbufHandle_t    s_ring;
 static volatile bool      s_active;
 static volatile bool      s_priming;    /* start of an over: build a cushion */
@@ -62,10 +56,10 @@ void audio_in_set_active(bool on)
             vRingbufferReturnItem(s_ring, p);
         s_priming  = true;
         s_dc_reset = true;
-        i2s_channel_enable(s_rx);
+        audio_hw_in_enable(true);
         ESP_LOGI(TAG, "capture ON");
     } else {
-        i2s_channel_disable(s_rx);
+        audio_hw_in_enable(false);
         ESP_LOGI(TAG, "capture OFF");
     }
 }
@@ -79,12 +73,11 @@ static void mic_task(void *arg)
     for (;;) {
         if (!s_active) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
 
-        size_t got = 0;
-        if (i2s_channel_read(s_rx, buf, sizeof buf, &got,
-                             pdMS_TO_TICKS(100)) != ESP_OK || !got)
+        size_t count = 0;
+        if (audio_hw_in_read(buf, MIC_READ_SAMPLES, &count, 100) != ESP_OK ||
+            !count)
             continue;
-
-        size_t count = got / sizeof(int16_t);
+        const size_t got = count * sizeof(int16_t);
         if (s_dc_reset) {
             /* Start from the first sample, so the offset is not a step. */
             s_dc_reset = false;
@@ -126,30 +119,13 @@ esp_err_t audio_in_init(void)
                                        MALLOC_CAP_SPIRAM);
     ESP_RETURN_ON_FALSE(s_ring, ESP_ERR_NO_MEM, TAG, "ring");
 
-    /* PDM receive exists only on I2S0 on the ESP32-S3; the DAC output is
-     * pinned to I2S1 for exactly this reason. */
-    i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    cc.dma_desc_num  = 4;
-    cc.dma_frame_num = 240;
-    cc.auto_clear    = true;
-    ESP_RETURN_ON_ERROR(i2s_new_channel(&cc, NULL, &s_rx), TAG, "chan");
-
-    i2s_pdm_rx_config_t pc = {
-        .clk_cfg  = I2S_PDM_RX_CLK_DEFAULT_CONFIG(TX_AUDIO_RATE_HZ),
-        .slot_cfg = I2S_PDM_RX_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                   I2S_SLOT_MODE_MONO),
-        .gpio_cfg = {
-            .clk = BOARD_PIN_PDM_CLK,
-            .din = BOARD_PIN_PDM_DATA,
-            .invert_flags = { .clk_inv = false },
-        },
-    };
-    ESP_RETURN_ON_ERROR(i2s_channel_init_pdm_rx_mode(s_rx, &pc), TAG, "pdm");
+    /* The board's own microphone, 16-bit mono: see audio_hw.h. */
+    ESP_RETURN_ON_ERROR(audio_hw_in_open(TX_AUDIO_RATE_HZ), TAG, "hw");
 
     /* Not enabled here: the microphone stays off until PTT asks for it. */
     xTaskCreatePinnedToCore(mic_task, "mic", 3072, NULL, 11, &s_task, 1);
-    ESP_LOGI(TAG, "PDM mic ready on clk=%d din=%d at %d Hz (idle until PTT)",
-             BOARD_PIN_PDM_CLK, BOARD_PIN_PDM_DATA, TX_AUDIO_RATE_HZ);
+    ESP_LOGI(TAG, "mic ready at %d Hz, %s (idle until PTT)",
+             TX_AUDIO_RATE_HZ, audio_hw_describe());
     return ESP_OK;
 }
 
