@@ -12,6 +12,7 @@
 
 #include <inttypes.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -907,6 +908,86 @@ static lv_point_t    s_press_pt;
 static bool          s_press_tap;         /* this press may still be a tap */
 static bool          s_gestured;          /* ...and this one became a gesture */
 static volatile bool s_swipe;
+static uint32_t      s_up_before_press;   /* ms the finger was up before it */
+
+/* --- the ring: tuning on a board without a knob ----------------------------
+ * A finger that lands near the rim and moves ALONG it is a knob: every
+ * RING_DEG_PER_DETENT of arc is one detent, clockwise up, handed to the same
+ * input task the knob feeds -- so acceleration, the step, and the editors all
+ * behave as they do for the real thing.
+ *
+ * It must not steal anything else. A finger that lands near the rim and does
+ * not move is still a tap on whatever is there. One that moves more across
+ * the rim than along it -- the swipe down to memory mode starts at the top
+ * edge -- is left to LVGL's gestures. Only once it has moved TAP_SLOP, and
+ * mostly around, does it become the ring, and then for the rest of that
+ * press: it is a gesture, not a tap, so nothing it crosses is pressed, the
+ * PTT slab least of all. */
+#define RING_TUNE           (!BOARD_HAS_ENCODER)
+#define RING_R0             110           /* px from centre a ring drag starts */
+#define RING_DEG_PER_DETENT 8.0f          /* 45 detents a turn; the knob has 30 */
+static bool           s_ring_armed;       /* landed on the rim, not yet decided */
+static bool           s_ring_on;          /* ...and this press is the ring */
+static float          s_ring_deg;         /* angle last seen, degrees */
+static float          s_ring_acc;         /* degrees not yet a whole detent */
+static _Atomic int32_t s_ring_detents;    /* for the input task */
+
+static float ring_angle(lv_point_t p)
+{
+    return atan2f((float)(p.y - CY), (float)(p.x - CX)) * 57.29578f;
+}
+
+static void ring_follow(lv_point_t p)
+{
+    float a = ring_angle(p), d = a - s_ring_deg;
+    if (d > 180.0f)  d -= 360.0f;          /* across the +-180 seam */
+    if (d < -180.0f) d += 360.0f;
+    s_ring_deg  = a;
+    s_ring_acc += d;
+    int32_t n = (int32_t)(s_ring_acc / RING_DEG_PER_DETENT);
+    if (n) {
+        s_ring_acc -= (float)n * RING_DEG_PER_DETENT;
+        atomic_fetch_add(&s_ring_detents, n);
+    }
+}
+
+/* Every LVGL read while the finger is down. */
+static void pressing_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_ring_armed && !s_ring_on) return;
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+
+    if (s_ring_on) { ring_follow(p); return; }
+
+    const int dx = p.x - s_press_pt.x, dy = p.y - s_press_pt.y;
+    if (dx * dx + dy * dy <= TAP_SLOP * TAP_SLOP) return;   /* still a tap */
+    s_ring_armed = false;
+
+    /* Along the rim or across it? Compare the way round with the way out. */
+    const float r0 = hypotf((float)(s_press_pt.x - CX), (float)(s_press_pt.y - CY));
+    const float r1 = hypotf((float)(p.x - CX), (float)(p.y - CY));
+    float da = ring_angle(p) - ring_angle(s_press_pt);
+    if (da > 180.0f)  da -= 360.0f;
+    if (da < -180.0f) da += 360.0f;
+    const float along = fabsf(da) / 57.29578f * r0, across = fabsf(r1 - r0);
+    if (along < across) return;                     /* a swipe: LVGL's */
+
+    s_ring_on    = true;
+    s_gestured   = true;                            /* never a tap now */
+    s_press_tap  = false;
+    s_ring_deg   = ring_angle(s_press_pt);          /* count the way so far */
+    s_ring_acc   = 0.0f;
+    ring_follow(p);
+}
+
+int32_t ui_take_ring_detents(void)
+{
+    return atomic_exchange(&s_ring_detents, 0);
+}
 
 static void netinfo_show(bool on)
 {
@@ -928,6 +1009,21 @@ static void tap(lv_point_t p, uint32_t held)
     /* An editor is open: ANY tap accepts. Commitment on the imprecise input,
      * selection on the precise one. */
     if (s_edit != ED_NONE) { edit_commit(); return; }
+
+    /* PTT on a board where the glass is also the knob: a tap on the slab,
+     * decided here, on the release -- never on the press, which may be the
+     * start of a turn of the ring. A press that moved is not a tap and never
+     * gets here. The re-arm is the one touch_cb applies on the knob, measured
+     * from before this press began. */
+    if (RING_TUNE && p.y >= PTT_TOP && s_last.link_ok) {
+        if (s_up_before_press < PTT_REARM_MS) {
+            ESP_LOGI(TAG, "PTT tap ignored: finger up only %u ms",
+                     (unsigned)s_up_before_press);
+            return;
+        }
+        s_ptt_tap = true;
+        return;
+    }
 
     /* The address card goes away with a tap on the card itself, and that tap
      * does nothing else. Like any other control on the face it answers only
@@ -997,7 +1093,9 @@ static void release_cb(lv_event_t *e)
     (void)e;
     s_released_at = lv_tick_get();
     const bool was_tap = s_press_tap && !s_gestured;
-    s_press_tap = false;
+    s_press_tap  = false;
+    s_ring_armed = false;
+    s_ring_on    = false;
     if (!was_tap) return;
     lv_indev_t *indev = lv_indev_active();
     if (indev) {
@@ -1017,6 +1115,7 @@ static void gesture_cb(lv_event_t *e)
     lv_indev_t *indev = lv_indev_active();
     if (!indev) return;
     s_gestured = true;
+    if (s_ring_on) return;          /* a fast turn of the ring is not a swipe */
     if (lv_indev_get_gesture_dir(indev) != LV_DIR_BOTTOM) return;
     if (s_edit != ED_NONE || s_asking || !s_last.link_ok || s_last.tx ||
         !s_last.has_memories) return;
@@ -1035,6 +1134,10 @@ static void touch_cb(lv_event_t *e)
     s_pressed_at = lv_tick_get();
     s_press_tap  = false;
     s_gestured   = false;
+    s_up_before_press = lv_tick_elaps(s_released_at);
+    s_ring_on    = false;
+    s_ring_armed = RING_TUNE && !s_asking &&
+                   hypotf((float)(p.x - CX), (float)(p.y - CY)) >= RING_R0;
 
     /* A question is up: this tap answers it and goes nowhere else. On the
      * panel is yes; anywhere else is no -- the operator was reaching for
@@ -1060,7 +1163,7 @@ static void touch_cb(lv_event_t *e)
     /* PTT keeps acting on the press: the whole slab, with a link, and not
      * while an editor is open, when a tap there accepts the edit. With no
      * link the slab would arm a transmitter we cannot reach. */
-    if (p.y >= PTT_TOP && s_edit == ED_NONE && s_last.link_ok) {
+    if (!RING_TUNE && p.y >= PTT_TOP && s_edit == ED_NONE && s_last.link_ok) {
         /* One tap, one toggle. A light touch can flicker -- press, release,
          * press within a single tap -- and on a toggle each extra press
          * undoes the one before: keyed and unkeyed in one tap, which reads as
@@ -1654,6 +1757,8 @@ static void build(void)
     lv_obj_add_event_cb(s_scr, touch_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_scr, release_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(s_scr, gesture_cb, LV_EVENT_GESTURE, NULL);
+    if (RING_TUNE)
+        lv_obj_add_event_cb(s_scr, pressing_cb, LV_EVENT_PRESSING, NULL);
     lv_obj_add_flag(s_scr, LV_OBJ_FLAG_CLICKABLE);
 }
 

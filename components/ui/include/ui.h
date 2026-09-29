@@ -81,6 +81,11 @@ bool ui_take_swipe(void);
 bool ui_edit_active(void);
 void ui_edit_rotate(int32_t detents);
 
+/* Detents turned on the ring -- a finger moving round the rim -- since the
+ * last call; clockwise positive, as the knob. Always 0 on a board with a real
+ * knob, where the rim is left to the face's own controls. */
+int32_t ui_take_ring_detents(void);
+
 typedef struct {
     bool     have_mode;    char    mode[8];
     bool     have_filter;  int32_t filt_lo, filt_hi;

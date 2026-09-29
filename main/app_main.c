@@ -199,7 +199,9 @@ static void encoder_task(void *arg)
         /* Fixed 1 ms cadence. The contact-duration filter needs regular
          * samples, not edges, so there is nothing to be gained from an ISR. */
         vTaskDelayUntil(&next, pdMS_TO_TICKS(ENC_POLL_MS));
-        int32_t delta = hal_encoder_poll();
+        /* The knob, or on a board without one the ring on the glass: the
+         * same detents either way, so everything below treats them alike. */
+        int32_t delta = hal_encoder_poll() + ui_take_ring_detents();
         int64_t now_us = esp_timer_get_time();
         uint32_t now_ms = (uint32_t)(now_us / 1000);
 
