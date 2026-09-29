@@ -217,6 +217,40 @@ idf.py -B build_icom -D VFO_RADIO=icom \
        build flash
 ```
 
+### Another board: the Waveshare ESP32-S3-Touch-LCD-1.85C
+
+The same firmware also builds for the 1.85C (and its speaker "BOX"), a round
+360×360 touch display with no knob and no haptic motor:
+
+```sh
+idf.py -B build_usbnet_lcd185c -D VFO_BOARD=lcd185c \
+       -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.usbnet" \
+       build flash
+```
+
+**The two boards' firmware is not interchangeable.** Their pins have nothing
+in common: the knob's image on a 1.85C is a black screen and a silent I2C bus.
+So any board but the knob carries its name in the image —
+`vfo-knob-aethersdr-lcd185c` — follows its own update channel, and refuses the
+other board's firmware as it refuses another radio's.
+
+On the 1.85C:
+
+- **Tuning is the ring.** Put a finger near the rim and move it round, like a
+  knob: 8° is one step, clockwise up, with the same acceleration. A finger that
+  does not move is still a tap on whatever is there.
+- **PTT is a tap on the slab, taken when the finger lifts** — never on the
+  press, which could be the start of a turn of the ring. A turn that crosses
+  the slab cannot key.
+- **Audio** is the built-in speaker (ES8311) and two microphones (ES7210),
+  averaged.
+- Upright with the cable **down**.
+
+`tools/snap.py` takes a screenshot over the serial console of a build without
+USB networking; with it, the configuration page serves one at
+`/api/screenshot`. `tools/mock_aether.py --rx-tone 700` sends a tone as receive
+audio.
+
 Host-side tests (no hardware, no ESP-IDF):
 
 ```sh

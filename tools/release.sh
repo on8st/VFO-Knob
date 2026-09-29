@@ -12,11 +12,14 @@
 #   tools/release.sh 1.2.3                  stage locally
 #   tools/release.sh 1.2.3 --push           stage and push the firmware branch
 #   RADIO=icom tools/release.sh 1.2.3 ...   another radio's firmware
+#   BOARD=lcd185c tools/release.sh 1.2.3    another board's (with any RADIO)
 #
 # One firmware per radio, all on the same version, each in its own channel:
 # firmware/<radio>/ holds vfo-knob-<radio>-<version>.bin and a manifest naming
 # the project, and a knob follows only its own radio's channel. RADIO defaults
-# to aethersdr.
+# to aethersdr. Likewise per board: BOARD defaults to knob18, whose firmware
+# is named and published exactly as above; any other board's is
+# vfo-knob-<radio>-<board>, in firmware/<radio>-<board>/.
 #
 # The firmware branch is kept ORPHAN so 1.7 MB per release never lands in the
 # history of main.
@@ -28,6 +31,8 @@ VER="${1:-}"
 PUSH="${2:-}"
 RADIO="${RADIO:-aethersdr}"
 [[ "$RADIO" =~ ^[a-z0-9]+$ ]] || { echo "RADIO must be [a-z0-9]" >&2; exit 1; }
+BOARD="${BOARD:-knob18}"
+[[ "$BOARD" =~ ^[a-z0-9]+$ ]] || { echo "BOARD must be [a-z0-9]" >&2; exit 1; }
 # build_usbnet has always been the AetherSDR firmware's; any other radio's
 # gets a directory of its own, or its configuration would be the last one's,
 # and its own overlay: sdkconfig.usbnet is the USB build, which a radio reached
@@ -39,6 +44,15 @@ if [ "$RADIO" != aethersdr ]; then
     OVERLAY="sdkconfig.$RADIO"
 fi
 [ -f "$OVERLAY" ] || { echo "$OVERLAY is missing" >&2; exit 1; }
+# The board is part of the name, and so of the channel, for every board but
+# the knob: the name is what stops a unit accepting another board's image.
+NAME="vfo-knob-$RADIO"
+CHANNEL="$RADIO"
+if [ "$BOARD" != knob18 ]; then
+    NAME="vfo-knob-$RADIO-$BOARD"
+    CHANNEL="$RADIO-$BOARD"
+    BUILD="${BUILD}_$BOARD"
+fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -63,14 +77,14 @@ DESC=$(git describe --tags --dirty --always)
 DEFAULTS="sdkconfig.defaults"
 [ -f sdkconfig.defaults.local ] && DEFAULTS="$DEFAULTS;sdkconfig.defaults.local"
 
-echo "==> building the $RADIO firmware $VER"
+echo "==> building the $RADIO firmware $VER for $BOARD"
 # reconfigure: CMake reads `git describe` only when it configures, and a new
 # tag on an already-built commit does not make it configure again.
-idf.py -B "$BUILD" -D VFO_RADIO="$RADIO" \
+idf.py -B "$BUILD" -D VFO_RADIO="$RADIO" -D VFO_BOARD="$BOARD" \
        -D SDKCONFIG_DEFAULTS="$DEFAULTS;$OVERLAY" \
        reconfigure build >/dev/null
 
-BIN="$BUILD/vfo-knob-$RADIO.bin"
+BIN="$BUILD/$NAME.bin"
 # esp_app_desc_t leads the first segment: magic at byte 32, version at 48.
 IMGVER=$(python3 -c 'import sys; b = open(sys.argv[1], "rb").read()
 print(b[48:80].split(b"\0")[0].decode() if b[32:36] == bytes.fromhex("3254cdab") else "?")' "$BIN")
@@ -83,16 +97,16 @@ espsecure.py verify_signature --version 2 --keyfile ota_signing_key.pem "$BIN" \
     | grep -q "verification successful" \
     || { echo "image is not signed with this key -- refusing to publish" >&2; exit 1; }
 
-DIR="firmware/$RADIO"
+DIR="firmware/$CHANNEL"
 mkdir -p "$DIR"
-OUT="vfo-knob-$RADIO-$VER.bin"
+OUT="$NAME-$VER.bin"
 cp "$BIN" "$DIR/$OUT"
 SHA=$(sha256sum "$DIR/$OUT" | cut -d' ' -f1)
 SIZE=$(stat -c%s "$DIR/$OUT")
 
 cat > "$DIR/manifest.json" <<JSON
 {
-  "project": "vfo-knob-$RADIO",
+  "project": "$NAME",
   "version": "$VER",
   "file": "$OUT",
   "sha256": "$SHA",
@@ -119,8 +133,8 @@ fi
 mkdir -p "$TMP/wt/$DIR"
 cp "$TMP/manifest.json" "$TMP/$OUT" "$TMP/wt/$DIR/"
 git -C "$TMP/wt" add firmware
-git -C "$TMP/wt" commit -q -m "firmware $VER for $RADIO"
+git -C "$TMP/wt" commit -q -m "firmware $VER for $CHANNEL"
 git -C "$TMP/wt" push -u origin firmware
 git worktree remove --force "$TMP/wt"
 rm -rf "$TMP"
-echo "==> published; $RADIO knobs will see $VER within their check interval"
+echo "==> published; $CHANNEL units will see $VER within their check interval"
