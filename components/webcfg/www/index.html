@@ -180,7 +180,7 @@ async function load(){
   $('vol').value=c.vol;   $('mic').value=c.mic;
   $('user').value=c.user; $('warn').hidden=!c.defaultpw;
   $('otah').value=c.otah; $('dim').value=c.dim; $('blank').value=c.blank; FWBASE=c.fwbase||'';
-  FWROOT=c.fwroot||''; RADIO=c.radio||'aethersdr'; radios();
+  FWROOT=c.fwroot||''; RADIO=c.radio||'aethersdr'; BOARD=c.board||''; radios();
   /* The address this browser reaches the knob from. Over the cable that is the
      USB link's own 10.55.42.2 -- found automatically there, and unreachable
      from WiFi -- so it is only offered when it can be the right answer. */
@@ -339,7 +339,9 @@ $('upload').onclick = async()=>{
  * which the knob accepts only when the upload names that radio. */
 const RADIOS=[{id:'aethersdr', name:'AetherSDR (TCI)'},
               {id:'icom',      name:'Icom IC-705 (LAN)'}];
-let FWROOT='', RADIO='';
+/* BOARD: '' on the knob, '-<board>' on any other -- another radio's firmware
+   for THIS board, never the knob's. */
+let FWROOT='', RADIO='', BOARD='';
 const rname=id=>(RADIOS.find(r=>r.id===id)||{name:id}).name;
 function radios(){
   const list=RADIOS.some(r=>r.id===RADIO) ? RADIOS : [{id:RADIO,name:RADIO},...RADIOS];
@@ -353,12 +355,12 @@ $('switch').onclick=async()=>{
   if(!confirm(`Replace the ${rname(RADIO)} firmware with the ${rname(id)} firmware?`)) return;
   $('msg').style.color='var(--dim)'; $('switch').disabled=true;
   try{
-    const r=await fetch(FWROOT+id+'/manifest.json',{cache:'no-store'});
+    const r=await fetch(FWROOT+id+BOARD+'/manifest.json',{cache:'no-store'});
     if(!r.ok) throw new Error(`no ${rname(id)} firmware is published yet`);
     const m=await r.json();
-    if(m.project && m.project!=='vfo-knob-'+id) throw new Error('the channel holds '+m.project);
+    if(m.project && m.project!=='vfo-knob-'+id+BOARD) throw new Error('the channel holds '+m.project);
     $('msg').textContent=`Downloading the ${rname(id)} firmware ${m.version}…`;
-    const f=await fetch(FWROOT+id+'/'+m.file,{cache:'no-store'});
+    const f=await fetch(FWROOT+id+BOARD+'/'+m.file,{cache:'no-store'});
     if(!f.ok) throw new Error('download failed ('+f.status+')');
     const b=await f.blob();
     $('msg').textContent=`Uploading ${(b.size/1048576).toFixed(2)} MB to the knob…`;

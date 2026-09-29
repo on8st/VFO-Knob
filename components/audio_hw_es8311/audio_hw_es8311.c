@@ -56,6 +56,11 @@ static esp_err_t bus_open(uint32_t rate)
     };
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_tx, &sc), TAG, "tx std");
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_rx, &sc), TAG, "rx std");
+    /* Transmit runs from here on, whether or not the speaker's codec comes
+     * up: in full duplex the receive side is clocked by it, so without it
+     * the microphone would never deliver a sample. Idle, it sends the
+     * silence auto_clear leaves behind. */
+    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx), TAG, "tx enable");
     s_rate = rate;
     return ESP_OK;
 }
@@ -105,8 +110,7 @@ esp_err_t audio_hw_out_open(uint32_t rate, i2s_chan_handle_t *tx)
      * above, as on the knob, so it means the same on both. */
     codec->set_vol(codec, 0.0f);
 
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx), TAG, "tx enable");
-    *tx = s_tx;
+    *tx = s_tx;                        /* enabled already, by bus_open() */
     return ESP_OK;
 }
 

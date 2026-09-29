@@ -190,14 +190,14 @@ static esp_err_t config_get(httpd_req_t *r)
     bool client_usb;
     client_addr(r, client, sizeof client, &client_usb);
 
-    char buf[640];
+    char buf[768];                    /* worst case with every field full */
     /* The password is deliberately not returned. The page sends one only when
      * the field is non-empty, so a save does not have to round-trip it. */
     int n = snprintf(buf, sizeof buf,
              "{\"host\":\"%s\",\"port\":%u,\"ssid\":\"%s\","
              "\"vol\":%u,\"mic\":%u,"
              "\"user\":\"%s\",\"defaultpw\":%s,\"otah\":%u,\"dim\":%u,\"blank\":%u,"
-             "\"radio\":\"%s\",\"fwbase\":\"%s\",\"fwroot\":\"%s\","
+             "\"radio\":\"%s\",\"board\":\"%s\",\"fwbase\":\"%s\",\"fwroot\":\"%s\","
              "\"ruser\":\"%s\",\"rpass\":%s,\"link\":\"%s\","
              "\"client\":\"%s\",\"client_usb\":%s}",
              c->radio_host, (unsigned)c->radio_port, c->ssid,
@@ -205,7 +205,8 @@ static esp_err_t config_get(httpd_req_t *r)
              net_prov_web_user(),
              net_prov_web_is_default() ? "true" : "false",
              (unsigned)net_prov_ota_hours(), (unsigned)net_prov_dim_min(),
-             (unsigned)net_prov_blank_min(), ota_radio(), ota_base_url(),
+             (unsigned)net_prov_blank_min(), ota_radio(), ota_board_suffix(),
+             ota_base_url(),
              ota_root_url(), c->radio_user, c->radio_pass[0] ? "true" : "false",
              radio_link_name(), client, client_usb ? "true" : "false");
     if (n < 0 || n >= (int)sizeof buf) return httpd_resp_send_500(r);

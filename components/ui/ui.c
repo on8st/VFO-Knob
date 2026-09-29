@@ -9,11 +9,14 @@
 #include "esp_heap_caps.h"
 #include "esp_lvgl_port.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include <inttypes.h>
 #include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -909,6 +912,7 @@ static bool          s_press_tap;         /* this press may still be a tap */
 static bool          s_gestured;          /* ...and this one became a gesture */
 static volatile bool s_swipe;
 static uint32_t      s_up_before_press;   /* ms the finger was up before it */
+static bool          s_press_slab;        /* began on the slab, knobless board */
 
 /* --- the ring: tuning on a board without a knob ----------------------------
  * A finger that lands near the rim and moves ALONG it is a knob: every
@@ -937,8 +941,23 @@ static float ring_angle(lv_point_t p)
     return atan2f((float)(p.y - CY), (float)(p.x - CX)) * 57.29578f;
 }
 
+static bool s_ring_lost;                  /* finger near the centre */
+
 static void ring_follow(lv_point_t p)
 {
+    /* Near the centre the angle means nothing -- a finger crossing it swings
+     * half a turn in one read, 22 detents before acceleration -- so the ring
+     * lets go there, and takes up again from wherever the finger comes out,
+     * without counting the way across. */
+    if (hypotf((float)(p.x - CX), (float)(p.y - CY)) < RING_R0 / 2) {
+        s_ring_lost = true;
+        return;
+    }
+    if (s_ring_lost) {
+        s_ring_lost = false;
+        s_ring_deg  = ring_angle(p);
+        return;
+    }
     float a = ring_angle(p), d = a - s_ring_deg;
     if (d > 180.0f)  d -= 360.0f;          /* across the +-180 seam */
     if (d < -180.0f) d += 360.0f;
@@ -981,6 +1000,7 @@ static void pressing_cb(lv_event_t *e)
     s_press_tap  = false;
     s_ring_deg   = ring_angle(s_press_pt);          /* count the way so far */
     s_ring_acc   = 0.0f;
+    s_ring_lost  = false;
     ring_follow(p);
 }
 
@@ -1009,21 +1029,6 @@ static void tap(lv_point_t p, uint32_t held)
     /* An editor is open: ANY tap accepts. Commitment on the imprecise input,
      * selection on the precise one. */
     if (s_edit != ED_NONE) { edit_commit(); return; }
-
-    /* PTT on a board where the glass is also the knob: a tap on the slab,
-     * decided here, on the release -- never on the press, which may be the
-     * start of a turn of the ring. A press that moved is not a tap and never
-     * gets here. The re-arm is the one touch_cb applies on the knob, measured
-     * from before this press began. */
-    if (RING_TUNE && p.y >= PTT_TOP && s_last.link_ok) {
-        if (s_up_before_press < PTT_REARM_MS) {
-            ESP_LOGI(TAG, "PTT tap ignored: finger up only %u ms",
-                     (unsigned)s_up_before_press);
-            return;
-        }
-        s_ptt_tap = true;
-        return;
-    }
 
     /* The address card goes away with a tap on the card itself, and that tap
      * does nothing else. Like any other control on the face it answers only
@@ -1088,22 +1093,63 @@ static void tap(lv_point_t p, uint32_t held)
     }
 }
 
+/* PTT on a board where the glass is also the knob, decided on the release of
+ * a press that began on the slab -- never on the press, which the knob's PTT
+ * can act on because its rim is not a control.
+ *
+ * The two directions are deliberately not alike. Keying is the dangerous
+ * one, so it takes a tap that stayed put: PTT_KEY_SLOP, well under the
+ * TAP_SLOP a tap elsewhere is allowed, so a brush or a slide on the slab
+ * keys nothing. Unkeying is the safe one, and stopping a transmission must
+ * never require aim (see PTT_TOP): while we are on the air, any release on
+ * the slab unkeys, however far the finger went. Both keep the knob's re-arm
+ * against a flickering touch, measured from before this press began. */
+#define PTT_KEY_SLOP 10                   /* px a keying tap may wander */
+
+static void slab_release(bool was_tap, int moved)
+{
+    if (s_asking || !s_last.link_ok) return;
+    if (s_up_before_press < PTT_REARM_MS) {
+        ESP_LOGI(TAG, "PTT ignored: finger up only %u ms",
+                 (unsigned)s_up_before_press);
+        return;
+    }
+    const bool ours_on_air = s_last.tx && !s_last.tx_remote;
+    if (ours_on_air) {
+        s_ptt_tap = true;                            /* unkey: any release */
+        return;
+    }
+    if (was_tap && moved <= PTT_KEY_SLOP) {
+        s_ptt_tap = true;                            /* key: a still tap */
+        return;
+    }
+    ESP_LOGI(TAG, "PTT not keyed: the finger moved %d px", moved);
+}
+
 static void release_cb(lv_event_t *e)
 {
     (void)e;
     s_released_at = lv_tick_get();
     const bool was_tap = s_press_tap && !s_gestured;
+    const bool slab    = s_press_slab;
     s_press_tap  = false;
+    s_press_slab = false;
     s_ring_armed = false;
     s_ring_on    = false;
-    if (!was_tap) return;
+
+    int moved = 0;
     lv_indev_t *indev = lv_indev_active();
     if (indev) {
         lv_point_t q;
         lv_indev_get_point(indev, &q);
-        if (LV_ABS(q.x - s_press_pt.x) > TAP_SLOP ||
-            LV_ABS(q.y - s_press_pt.y) > TAP_SLOP) return;   /* a drag */
+        moved = LV_MAX(LV_ABS(q.x - s_press_pt.x), LV_ABS(q.y - s_press_pt.y));
     }
+    /* An open editor takes a tap on the slab as its accept, as on the knob. */
+    if (slab && s_edit == ED_NONE) {
+        slab_release(was_tap, moved);
+        return;
+    }
+    if (!was_tap || moved > TAP_SLOP) return;         /* a drag */
     tap(s_press_pt, lv_tick_elaps(s_pressed_at));
 }
 
@@ -1136,7 +1182,10 @@ static void touch_cb(lv_event_t *e)
     s_gestured   = false;
     s_up_before_press = lv_tick_elaps(s_released_at);
     s_ring_on    = false;
-    s_ring_armed = RING_TUNE && !s_asking &&
+    s_press_slab = false;
+    /* The ring is the rim ABOVE the slab: the slab is PTT and only PTT, so
+     * a nudge of the ring there can never be read as a press of it. */
+    s_ring_armed = RING_TUNE && !s_asking && p.y < PTT_TOP &&
                    hypotf((float)(p.x - CX), (float)(p.y - CY)) >= RING_R0;
 
     /* A question is up: this tap answers it and goes nowhere else. On the
@@ -1178,6 +1227,10 @@ static void touch_cb(lv_event_t *e)
         s_ptt_tap = true;
         return;
     }
+
+    /* Without a knob the slab acts on the release: see slab_release(). Not
+     * a press that answered the question above -- that returned already. */
+    s_press_slab = RING_TUNE && p.y >= PTT_TOP;
 
     /* Everything else: see release_cb. */
     s_press_tap = true;
@@ -2324,6 +2377,21 @@ static void b64_line(const uint8_t *in, size_t n)
     printf("SNAP:%s\n", out);
 }
 
+typedef struct {
+    lv_draw_buf_t     buf;
+    lv_result_t       r;
+    SemaphoreHandle_t done;
+} snap_job_t;
+
+/* On the LVGL task, from lv_async_call. */
+static void snap_job(void *arg)
+{
+    snap_job_t *job = arg;
+    job->r = lv_snapshot_take_to_draw_buf(lv_screen_active(),
+                                          LV_COLOR_FORMAT_RGB565, &job->buf);
+    xSemaphoreGive(job->done);
+}
+
 uint16_t *ui_snapshot(uint32_t *out_w, uint32_t *out_h)
 {
     if (!s_disp) return NULL;
@@ -2336,15 +2404,40 @@ uint16_t *ui_snapshot(uint32_t *out_w, uint32_t *out_h)
         return NULL;
     }
 
-    lv_draw_buf_t buf;
-    lv_result_t r = LV_RESULT_INVALID;
-    if (lv_draw_buf_init(&buf, w, h, LV_COLOR_FORMAT_RGB565, stride,
-                         lv_draw_buf_align(mem, LV_COLOR_FORMAT_RGB565),
-                         size) == LV_RESULT_OK && lvgl_port_lock(500)) {
-        r = lv_snapshot_take_to_draw_buf(lv_screen_active(),
-                                         LV_COLOR_FORMAT_RGB565, &buf);
+    /* Rendered on the LVGL task, not here. A snapshot draws the whole face,
+     * and the tasks that ask for one -- the console, the web server -- have
+     * stacks sized for their own work, not for LVGL's renderer; the LVGL task
+     * has. The job lives on the heap: if it ever outlasts the wait it is
+     * left to finish into memory nobody will free, rather than into a stack
+     * frame that has gone. */
+    snap_job_t *job = calloc(1, sizeof *job);
+    if (!job || lv_draw_buf_init(&job->buf, w, h, LV_COLOR_FORMAT_RGB565, stride,
+                                 lv_draw_buf_align(mem, LV_COLOR_FORMAT_RGB565),
+                                 size) != LV_RESULT_OK ||
+        !(job->done = xSemaphoreCreateBinary())) {
+        if (job) free(job);
+        heap_caps_free(mem);
+        return NULL;
+    }
+    job->r = LV_RESULT_INVALID;
+    bool queued = false;
+    if (lvgl_port_lock(500)) {
+        queued = lv_async_call(snap_job, job) == LV_RESULT_OK;
         lvgl_port_unlock();
     }
+    if (!queued || xSemaphoreTake(job->done, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        ESP_LOGE(TAG, "snapshot %s", queued ? "timed out" : "not queued");
+        if (!queued) {
+            vSemaphoreDelete(job->done);
+            free(job);
+            heap_caps_free(mem);
+        }
+        return NULL;
+    }
+    const lv_result_t r = job->r;
+    const uint8_t *data = job->buf.data;
+    vSemaphoreDelete(job->done);
+    free(job);
     if (r != LV_RESULT_OK) {
         heap_caps_free(mem);
         ESP_LOGE(TAG, "snapshot failed");
@@ -2354,7 +2447,7 @@ uint16_t *ui_snapshot(uint32_t *out_w, uint32_t *out_h)
      * plain w*h pixels and one pointer to free. Forward is safe: each row
      * moves towards the start, never past a row not yet moved. */
     for (uint32_t y = 0; y < h; y++)
-        memmove(mem + y * w * 2, buf.data + y * stride, w * 2);
+        memmove(mem + y * w * 2, data + y * stride, w * 2);
     *out_w = w;
     *out_h = h;
     return (uint16_t *)mem;

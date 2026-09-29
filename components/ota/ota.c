@@ -115,6 +115,8 @@ static bool same_product(const char *a, const char *b)
     return strcmp(product_of(a), product_of(b)) == 0;
 }
 
+const char *ota_board_suffix(void) { return OTA_BOARD_SUFFIX; }
+
 /* The radio alone, without the board: what the configuration page offers and
  * compares against its list of radios. */
 const char *ota_radio(void)

@@ -67,6 +67,11 @@ void ota_get_status(ota_status_t *out);
  * follows the update channel of that name. */
 const char *ota_radio(void);
 
+/* What the board adds to both: "" on the knob, "-<board>" on any other, so
+ * another radio's firmware for THIS board is vfo-knob-<radio><suffix>, in
+ * the channel <radio><suffix>. */
+const char *ota_board_suffix(void);
+
 /* Where this firmware's images are published -- ota_root_url() plus the
  * radio. The configuration page needs this so it can do the download itself
  * when the device has no route out. */
