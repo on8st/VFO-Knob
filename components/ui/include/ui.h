@@ -45,6 +45,7 @@ typedef struct {
     float    tx_mic_dbm, tx_fwd_w, tx_peak_w, tx_swr, tx_alc;
     bool     tx;         /* the radio is transmitting, whoever keyed it */
     bool     tx_remote;  /* ...and it was not us, so we cannot stop it */
+    bool     ptt_ours;   /* our PTT is not idle: asked for, on air, releasing */
     bool     link_ok;
     bool     slice_locked;
     bool     may_key;
@@ -61,6 +62,13 @@ int32_t ui_take_step_request(void);
 
 /* A tap landed on the PTT pill. Consumed by the caller. */
 bool ui_take_ptt_tap(void);
+
+/* On a board without a knob the slab says what it means rather than
+ * "toggle": +1 key, -1 unkey, 0 nothing. The caller must act on it as said --
+ * radio_ptt_key(), radio_ptt_unkey() -- never as a toggle, because the radio
+ * may have changed state since the finger lifted, and an unkey that turned
+ * into a key would put the rig on the air. Consumed by the caller. */
+int ui_take_ptt_intent(void);
 
 /* A swipe down the face: memory mode on, or off again. Only with a link, in
  * receive, on a radio with memories, and with nothing else asking for the

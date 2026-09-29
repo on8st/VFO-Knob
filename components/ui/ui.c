@@ -457,6 +457,7 @@ static int   s_dig_x[N_DIG];
 static int   s_active_dig = 5;
 static int32_t s_step_req;
 static bool  s_ptt_tap, s_was_tx;
+static _Atomic int s_ptt_intent;       /* knobless slab: +1 key, -1 unkey */
 /* A PTT press counts only once the finger has been up this long (touch_cb).
  * A flicker is a few tens of ms; a deliberate second tap is well over this. */
 #define PTT_REARM_MS 150
@@ -913,6 +914,7 @@ static bool          s_gestured;          /* ...and this one became a gesture */
 static volatile bool s_swipe;
 static uint32_t      s_up_before_press;   /* ms the finger was up before it */
 static bool          s_press_slab;        /* began on the slab, knobless board */
+static int           s_press_excursion;   /* ...and the furthest it went, px */
 
 /* --- the ring: tuning on a board without a knob ----------------------------
  * A finger that lands near the rim and moves ALONG it is a knob: every
@@ -962,6 +964,10 @@ static void ring_follow(lv_point_t p)
     if (d > 180.0f)  d -= 360.0f;          /* across the +-180 seam */
     if (d < -180.0f) d += 360.0f;
     s_ring_deg  = a;
+    /* No finger turns a ring 45 degrees in one 10 ms read. A step that big
+     * is a finger that cut across -- past the centre between two reads, too
+     * fast for the guard above to see it land -- so it is not counted. */
+    if (d > 45.0f || d < -45.0f) return;
     s_ring_acc += d;
     int32_t n = (int32_t)(s_ring_acc / RING_DEG_PER_DETENT);
     if (n) {
@@ -974,11 +980,19 @@ static void ring_follow(lv_point_t p)
 static void pressing_cb(lv_event_t *e)
 {
     (void)e;
-    if (!s_ring_armed && !s_ring_on) return;
+    if (!s_ring_armed && !s_ring_on && !s_press_slab) return;
     lv_indev_t *indev = lv_indev_active();
     if (!indev) return;
     lv_point_t p;
     lv_indev_get_point(indev, &p);
+
+    /* On the slab, the furthest the finger has been from where it landed:
+     * a keying tap must stay put the whole time, not just end up back. */
+    if (s_press_slab) {
+        const int m = LV_MAX(LV_ABS(p.x - s_press_pt.x), LV_ABS(p.y - s_press_pt.y));
+        if (m > s_press_excursion) s_press_excursion = m;
+        return;
+    }
 
     if (s_ring_on) { ring_follow(p); return; }
 
@@ -1098,15 +1112,23 @@ static void tap(lv_point_t p, uint32_t held)
  * can act on because its rim is not a control.
  *
  * The two directions are deliberately not alike. Keying is the dangerous
- * one, so it takes a tap that stayed put: PTT_KEY_SLOP, well under the
- * TAP_SLOP a tap elsewhere is allowed, so a brush or a slide on the slab
- * keys nothing. Unkeying is the safe one, and stopping a transmission must
- * never require aim (see PTT_TOP): while we are on the air, any release on
- * the slab unkeys, however far the finger went. Both keep the knob's re-arm
- * against a flickering touch, measured from before this press began. */
+ * one, so it takes a tap that stayed put the whole time: never further than
+ * PTT_KEY_SLOP from where it landed -- well under the TAP_SLOP a tap
+ * elsewhere is allowed, and measured over the whole press, not just where
+ * it lifted -- so a brush or a slide on the slab keys nothing. Unkeying is
+ * the safe one, and stopping a transmission must never require aim (see
+ * PTT_TOP): while our PTT is anything but idle -- asked for, on the air,
+ * releasing -- any release on the slab unkeys, however far the finger went.
+ * Both keep the knob's re-arm against a flickering touch, measured from
+ * before this press began.
+ *
+ * And each says what it means: an intent, not a toggle. The radio may have
+ * changed state by the time it is acted on, and a toggle meant as an unkey
+ * would then key. A key asked for while already keyed is ignored by the
+ * PTT state machine; an unkey can only ever stop. */
 #define PTT_KEY_SLOP 10                   /* px a keying tap may wander */
 
-static void slab_release(bool was_tap, int moved)
+static void slab_release(bool was_tap, int excursion)
 {
     if (s_asking || !s_last.link_ok) return;
     if (s_up_before_press < PTT_REARM_MS) {
@@ -1114,16 +1136,15 @@ static void slab_release(bool was_tap, int moved)
                  (unsigned)s_up_before_press);
         return;
     }
-    const bool ours_on_air = s_last.tx && !s_last.tx_remote;
-    if (ours_on_air) {
-        s_ptt_tap = true;                            /* unkey: any release */
+    if (s_last.ptt_ours || (s_last.tx && !s_last.tx_remote)) {
+        atomic_store(&s_ptt_intent, -1);             /* unkey: any release */
         return;
     }
-    if (was_tap && moved <= PTT_KEY_SLOP) {
-        s_ptt_tap = true;                            /* key: a still tap */
+    if (was_tap && excursion <= PTT_KEY_SLOP) {
+        atomic_store(&s_ptt_intent, +1);             /* key: a still tap */
         return;
     }
-    ESP_LOGI(TAG, "PTT not keyed: the finger moved %d px", moved);
+    ESP_LOGI(TAG, "PTT not keyed: the finger moved %d px", excursion);
 }
 
 static void release_cb(lv_event_t *e)
@@ -1146,7 +1167,7 @@ static void release_cb(lv_event_t *e)
     }
     /* An open editor takes a tap on the slab as its accept, as on the knob. */
     if (slab && s_edit == ED_NONE) {
-        slab_release(was_tap, moved);
+        slab_release(was_tap, LV_MAX(moved, s_press_excursion));
         return;
     }
     if (!was_tap || moved > TAP_SLOP) return;         /* a drag */
@@ -1183,6 +1204,7 @@ static void touch_cb(lv_event_t *e)
     s_up_before_press = lv_tick_elaps(s_released_at);
     s_ring_on    = false;
     s_press_slab = false;
+    s_press_excursion = 0;
     /* The ring is the rim ABOVE the slab: the slab is PTT and only PTT, so
      * a nudge of the ring there can never be read as a press of it. */
     s_ring_armed = RING_TUNE && !s_asking && p.y < PTT_TOP &&
@@ -1201,6 +1223,8 @@ static void touch_cb(lv_event_t *e)
         lv_obj_add_flag(s_ask_panel, LV_OBJ_FLAG_HIDDEN);
         s_asking = false;
         s_ptt_tap = false;
+        /* Likewise a key still waiting on the slab -- but never an unkey. */
+        { int key = 1; atomic_compare_exchange_strong(&s_ptt_intent, &key, 0); }
         /* Yes: the update screen at once. It is a separate screen, so PTT is
          * out of reach from this moment until the restart -- not whenever the
          * network task next looks. (The port lock is recursive.) */
@@ -2476,6 +2500,7 @@ esp_err_t ui_screenshot(void)
 
 int32_t ui_take_step_request(void) { int32_t v = s_step_req; s_step_req = 0; return v; }
 bool    ui_take_ptt_tap(void)      { bool v = s_ptt_tap;     s_ptt_tap  = false; return v; }
+int     ui_take_ptt_intent(void)   { return atomic_exchange(&s_ptt_intent, 0); }
 bool    ui_take_swipe(void)        { bool v = s_swipe;       s_swipe    = false; return v; }
 
 

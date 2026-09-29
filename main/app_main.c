@@ -427,6 +427,13 @@ static void ui_task(void *arg)
             ESP_LOGI(TAG, "PTT tapped");
             radio_ptt_toggle();
         }
+        /* The knobless slab says key or unkey; do exactly that, never toggle
+         * -- see ui_take_ptt_intent(). */
+        switch (ui_take_ptt_intent()) {
+        case  1: ESP_LOGI(TAG, "PTT: key");   radio_ptt_key();   break;
+        case -1: ESP_LOGI(TAG, "PTT: unkey"); radio_ptt_unkey(); break;
+        default: break;
+        }
 
         /* A swipe down: into memory mode, or back to the VFO. */
         if (ui_take_swipe()) {
@@ -527,6 +534,10 @@ static void ui_task(void *arg)
              * radio is still transmitting and the state is not PTT_ON, which
              * briefly and wrongly read as a remote transmission. */
             .tx_remote     = (st.tx && link_ok && st.ptt_state == PTT_IDLE),
+            /* Ours in any state but idle -- including asked for and not yet
+             * confirmed, when the radio is not transmitting yet but an unkey
+             * must already be able to stop it. */
+            .ptt_ours      = (st.ptt_state != PTT_IDLE),
             .link_ok       = link_ok,
             .slice_locked  = st.slice_locked,
             .may_key       = (st.permit == PERMIT_ALL),
