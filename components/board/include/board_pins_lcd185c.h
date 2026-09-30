@@ -74,7 +74,7 @@
 #define BOARD_PIN_TOUCH_RST     GPIO_NUM_NC     /* EXIO1 */
 #define BOARD_PIN_TOUCH_INT     GPIO_NUM_NC     /* GPIO4, unused: see above */
 
-/* --- audio (not yet used) --------------------------------------------------
+/* --- audio -----------------------------------------------------------------
  * ES8311 codec to the speaker and ES7210 with two microphones, one I2S bus,
  * both configured over I2C. */
 #define BOARD_PIN_I2S_MCLK      GPIO_NUM_2
@@ -82,5 +82,10 @@
 #define BOARD_PIN_I2S_WS        GPIO_NUM_38
 #define BOARD_PIN_I2S_DOUT      GPIO_NUM_47     /* to the ES8311 */
 #define BOARD_PIN_I2S_DIN       GPIO_NUM_39     /* from the ES7210 */
+
+/* The speaker amplifier's enable, active high. Waveshare's codec config says
+ * it has no PA pin, and its audio driver then sets this one by hand
+ * (Audio_PA_EN) -- without it the ES8311 plays perfectly into silence. */
+#define BOARD_PIN_SPK_PA        GPIO_NUM_15
 
 #endif /* BOARD_PINS_LCD185C_H */

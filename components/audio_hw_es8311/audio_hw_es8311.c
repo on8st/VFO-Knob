@@ -99,7 +99,7 @@ esp_err_t audio_hw_out_open(uint32_t rate, i2s_chan_handle_t *tx)
         .ctrl_if     = ci,
         .gpio_if     = audio_codec_new_gpio(),
         .codec_mode  = ESP_CODEC_DEV_WORK_MODE_DAC,
-        .pa_pin      = -1,         /* the speaker amplifier is always on */
+        .pa_pin      = BOARD_PIN_SPK_PA,   /* switched on with the codec */
         .master_mode = false,      /* the S3 drives the clocks */
         .use_mclk    = true,
     };
