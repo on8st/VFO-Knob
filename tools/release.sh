@@ -53,6 +53,14 @@ if [ "$BOARD" != knob18 ]; then
     CHANNEL="$RADIO-$BOARD"
     BUILD="${BUILD}_$BOARD"
 fi
+# Where the firmware branch is published. The knob's releases are Guru-RF's,
+# on origin; any other board's are this fork's -- its own channel, its own
+# signing key -- and must never land upstream, so they default to the remote
+# named fork. REMOTE= overrides the knob's, REMOTE_FORK= the others'.
+REMOTE="${REMOTE:-origin}"
+[ "$BOARD" != knob18 ] && REMOTE="${REMOTE_FORK:-fork}"
+git remote get-url "$REMOTE" >/dev/null 2>&1 || {
+    echo "no git remote named $REMOTE to publish to" >&2; exit 1; }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -122,7 +130,7 @@ cat "$DIR/manifest.json"
 echo "==> publishing to the firmware branch"
 TMP=$(mktemp -d)
 cp "$DIR/manifest.json" "$DIR/$OUT" "$TMP/"
-git fetch origin firmware:firmware 2>/dev/null || true
+git fetch "$REMOTE" firmware:firmware 2>/dev/null || true
 if git rev-parse --verify firmware >/dev/null 2>&1; then
     git worktree add "$TMP/wt" firmware >/dev/null
 else
@@ -134,7 +142,7 @@ mkdir -p "$TMP/wt/$DIR"
 cp "$TMP/manifest.json" "$TMP/$OUT" "$TMP/wt/$DIR/"
 git -C "$TMP/wt" add firmware
 git -C "$TMP/wt" commit -q -m "firmware $VER for $CHANNEL"
-git -C "$TMP/wt" push -u origin firmware
+git -C "$TMP/wt" push -u "$REMOTE" firmware
 git worktree remove --force "$TMP/wt"
 rm -rf "$TMP"
 echo "==> published; $CHANNEL units will see $VER within their check interval"

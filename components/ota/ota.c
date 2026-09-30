@@ -17,8 +17,14 @@
 
 static const char *TAG = "ota";
 
+/* This fork's boards are published from this fork, signed with its own key;
+ * the knob keeps following Guru-RF, whose releases it is built for. */
 #ifndef OTA_REPO
+#if VFO_BOARD_KNOB18
 #define OTA_REPO "Guru-RF/VFO-Knob"
+#else
+#define OTA_REPO "on8st/VFO-Knob"
+#endif
 #endif
 #ifndef OTA_BRANCH
 #define OTA_BRANCH "firmware"
