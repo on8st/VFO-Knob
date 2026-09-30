@@ -25,6 +25,10 @@
  * -- peaks at the limiter, which is what the limiter's knee is for. */
 #define AUDIO_HW_MIC_PREGAIN 64.0f
 
+/* The volume law: the operator's 0..100 raised to this. Linear, as it has
+ * always been, into a headphone jack. */
+#define AUDIO_HW_VOL_EXP 1
+
 /* The output, 16-bit stereo at `rate`, enabled and ready to write. */
 esp_err_t audio_hw_out_open(uint32_t rate, i2s_chan_handle_t *tx);
 

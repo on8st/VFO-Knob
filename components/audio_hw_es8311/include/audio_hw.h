@@ -23,6 +23,12 @@
  * AetherSDR's mic Level gauge -- the [MIC] peak in the log is the figure to
  * tune this by. */
 #define AUDIO_HW_MIC_PREGAIN 2.0f
+
+/* The volume law: the operator's 0..100 raised to this. Cubic, an audio
+ * taper: the speaker is loud from the first notch, and linear left all the
+ * useful range in the bottom few percent (heard on the BOX: 0 to 2 was
+ * already loud). 10% is -60 dB, 40% -24 dB, 70% -9 dB. */
+#define AUDIO_HW_VOL_EXP 3
 #define AUDIO_HW_MIC_GAIN_DB 30.0f
 
 /* The output, 16-bit stereo at `rate`, enabled and ready to write. */

@@ -1,6 +1,7 @@
 #include "audio_out.h"
 #include "audio_hw.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "driver/i2s_std.h"
@@ -62,11 +63,28 @@ static void play_task(void *arg)
          * shares a socket with PTT. */
         int16_t *smp   = (int16_t *)p;
         size_t   count = n / sizeof(int16_t);
+#if AUDIO_HW_VOL_EXP > 1
+        /* An audio taper, for output that is loud from the first notch: the
+         * operator's 0..100 is raised to AUDIO_HW_VOL_EXP, so the fine steps
+         * are at the quiet end. Recomputed only when the volume changes. */
+        static uint8_t last_vol = 0xFF;
+        static int32_t g_q15 = 32768;
+        const uint8_t  vol = s_vol;
+        if (vol != last_vol) {
+            last_vol = vol;
+            g_q15 = (int32_t)(powf(vol / 100.0f, AUDIO_HW_VOL_EXP) * 32768.0f);
+        }
+        if (vol != 100) {
+            for (size_t i = 0; i < count; i++)
+                smp[i] = (int16_t)(((int32_t)smp[i] * g_q15) >> 15);
+        }
+#else
         if (s_vol != 100) {
             int32_t g = s_vol;
             for (size_t i = 0; i < count; i++)
                 smp[i] = (int16_t)(((int32_t)smp[i] * g) / 100);
         }
+#endif
 
         size_t written = 0;
         i2s_channel_write(s_tx, smp, n, &written, portMAX_DELAY);
