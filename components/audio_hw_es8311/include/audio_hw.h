@@ -22,7 +22,8 @@
  * here. Calibrated on the BOX: normal speech at operating distance peaked at
  * 0.12-0.13 of full scale at 2x ([MIC] peak in the log), so 8x puts it near
  * 0.5 at the operator's 100%, with the limiter taking the loud syllables.
- * Not yet checked against AetherSDR's own mic Level gauge. */
+ * Checked on a real over into AetherSDR: peaks of 0.29-0.57 held over each
+ * 2 s, and the level AetherSDR reports back lands in the amber (-10..0 dB). */
 #define AUDIO_HW_MIC_PREGAIN 8.0f
 
 /* The volume law: the operator's 0..100 raised to this. Cubic, an audio
