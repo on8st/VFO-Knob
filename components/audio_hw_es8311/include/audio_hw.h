@@ -18,11 +18,12 @@
 #include "esp_err.h"
 
 /* The ES7210 has an analogue gain stage of its own (AUDIO_HW_MIC_GAIN_DB,
- * Waveshare's figure for this board), so the digital boost that the knob's
- * bare PDM element needs would only clip here. NOT YET CALIBRATED against
- * AetherSDR's mic Level gauge -- the [MIC] peak in the log is the figure to
- * tune this by. */
-#define AUDIO_HW_MIC_PREGAIN 2.0f
+ * Waveshare's figure for this board), so the knob's 64x would only clip
+ * here. Calibrated on the BOX: normal speech at operating distance peaked at
+ * 0.12-0.13 of full scale at 2x ([MIC] peak in the log), so 8x puts it near
+ * 0.5 at the operator's 100%, with the limiter taking the loud syllables.
+ * Not yet checked against AetherSDR's own mic Level gauge. */
+#define AUDIO_HW_MIC_PREGAIN 8.0f
 
 /* The volume law: the operator's 0..100 raised to this. Cubic, an audio
  * taper: the speaker is loud from the first notch, and linear left all the
